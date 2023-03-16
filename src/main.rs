@@ -1,37 +1,10 @@
+use std::collections::HashMap;
 use std::fs;
 use std::process;
-use std::collections::HashMap;
 use std::{
     io::{prelude::*, BufReader},
     net::{TcpListener, TcpStream},
 };
-
-type Handler = fn(&str) -> String;
-
-fn get_foo(_: &str) -> String {
-    let status = "HTTP/1.1 404 Not Found \r\n";
-    let body = "<html><h1>Foo</h1></html>";
-    let size = format!("Content-Length: {}\r\n", body.len());
-    let response = format!("{status}{size}\r\n{body}");
-    return response;
-}
-
-fn not_found(_: &str) -> String {
-    let status = "HTTP/1.1 404 Not Found \r\n";
-    let body = fs::read_to_string("src/404.html").unwrap_or("".to_string());
-    let size = format!("Content-Length: {}\r\n", body.len());
-    let response = format!("{status}{size}\r\n{body}");
-    return response;
-}
-
-fn get_index(_: &str) -> String {
-    let body = fs::read_to_string("src/index.html").unwrap_or("".to_string());
-    let status = "HTTP/1.1 200 OK \r\n";
-    let size = format!("Content-Length: {}\r\n", body.len());
-    let response = format!("{status}{size}\r\n{body}");
-    return response;
-}
-
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap_or_else(|err| {
@@ -47,6 +20,60 @@ fn main() {
     }
 }
 
+type Handler = fn() -> String;
+
+/// Gets the route from the request string, e.g. "/foo/bar?baz=qux" -> "/foo/bar"
+///
+/// # Examples
+///
+/// ```
+/// let request = "GET /foo/bar?baz=qux HTTP/1.1";
+/// let route = get_route(request);
+/// assert_eq!(route, "/foo/bar");
+/// ```
+fn get_route(request: &str) -> ParsedRequest {
+    let mut parts = request.split_whitespace();
+    let method = parts.next().unwrap();
+    let route = parts.next().unwrap();
+    let version = parts.next().unwrap();
+
+    let mut route_parts = route.split('?');
+    let route = route_parts.next().unwrap();
+
+    let query = route_parts.next().unwrap_or("");
+
+    ParsedRequest {
+        method: match method {
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "DELETE" => Method::DELETE,
+            _ => Method::GET,
+        },
+        route: route.to_string(),
+        version: version.to_string(),
+        query: query.to_string(),
+    }
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, PartialEq)]
+enum Method {
+    GET,
+    POST,
+    PUT,
+    DELETE,
+}
+
+#[derive(Debug, PartialEq)]
+struct ParsedRequest {
+    method: Method,
+    route: String,
+    version: String,
+    query: String,
+}
+
+/// Handles a connection, reading the request and writing the response.
 fn handle_connection(mut stream: TcpStream) {
     let buf = BufReader::new(&mut stream);
     let req: Vec<String> = buf
@@ -55,25 +82,82 @@ fn handle_connection(mut stream: TcpStream) {
         .take_while(|line| !line.is_empty())
         .collect();
 
+    let mut status = "HTTP/1.1 200 OK \r\n";
+    let request_string = match req.first() {
+        Some(r) => r.to_string(),
+        None => {
+            println!("Request {req:#?}");
+            status = "HTTP/1.1 404 Not Found \r\n";
+            "/404".to_string()
+        }
+    };
+    let request_route = get_route(&request_string);
 
-    // TODO how to memoize this hashmap for the whole run time?
-    let mut routes: HashMap<String, Handler> = HashMap::new();
-    routes.insert("GET / HTTP/1.1".to_string(), get_index);
-    routes.insert("GET /foo HTTP/1.1".to_string(), get_foo);
+    let mut handlers: HashMap<&str, Handler> = HashMap::new();
+    handlers.insert("/", index);
 
-    let empty_body = String::new();
-    let path = req.get(0).unwrap_or(&empty_body);
-
-    let response = match routes.get(path) {
-        Some(handler) => handler(path),
-        None => not_found(path),
+    let handler = match handlers.get(request_route.route.as_str()) {
+        Some(h) => h.to_owned(),
+        None => {
+            println!("Request {req:#?}");
+            status = "HTTP/1.1 404 Not Found \r\n";
+            not_found
+        }
     };
 
+    println!("Request {req:#?}");
+    let body = handler();
+    let size = format!("Content-Length: {}\r\n", body.len());
+    let response = format!("{status}{size}\r\n{body}");
     match stream.write_all(response.as_bytes()) {
         Ok(r) => r,
         Err(err) => {
             println!("{err}");
-            return;
         }
-    };
+    }
+    println!("Request {:#?}", req[0]);
+}
+
+fn index() -> String {
+    match fs::read_to_string("src/index.html") {
+        Ok(r) => r,
+        Err(err) => {
+            println!("{err}");
+            "".to_string()
+        }
+    }
+}
+
+fn not_found() -> String {
+    match fs::read_to_string("src/404.html") {
+        Ok(r) => r,
+        Err(err) => {
+            println!("{err}");
+            "".to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_route() {
+        let request = "GET / HTTP/1.1";
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/");
+
+        let request = "GET /foo HTTP/1.1";
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo");
+
+        let request = "GET /foo/bar HTTP/1.1";
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo/bar");
+
+        let request = "GET /foo/bar?baz=qux HTTP/1.1";
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo/bar");
+    }
 }
