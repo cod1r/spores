@@ -31,16 +31,46 @@ type Handler = fn() -> String;
 /// let route = get_route(request);
 /// assert_eq!(route, "/foo/bar");
 /// ```
-fn get_route(request: &str) -> String {
+fn get_route(request: &str) -> ParsedRequest {
     let mut parts = request.split_whitespace();
-    let _method = parts.next().unwrap();
+    let method = parts.next().unwrap();
     let route = parts.next().unwrap();
-    let _version = parts.next().unwrap();
+    let version = parts.next().unwrap();
 
     let mut route_parts = route.split('?');
     let route = route_parts.next().unwrap();
 
-    route.to_string()
+    let query = route_parts.next().unwrap_or("");
+
+    ParsedRequest {
+        method: match method {
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "DELETE" => Method::DELETE,
+            _ => Method::GET,
+        },
+        route: route.to_string(),
+        version: version.to_string(),
+        query: query.to_string(),
+    }
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, PartialEq)]
+enum Method {
+    GET,
+    POST,
+    PUT,
+    DELETE,
+}
+
+#[derive(Debug, PartialEq)]
+struct ParsedRequest {
+    method: Method,
+    route: String,
+    version: String,
+    query: String,
 }
 
 /// Handles a connection, reading the request and writing the response.
@@ -66,7 +96,7 @@ fn handle_connection(mut stream: TcpStream) {
     let mut handlers: HashMap<&str, Handler> = HashMap::new();
     handlers.insert("/", index);
 
-    let handler = match handlers.get(request_route.as_str()) {
+    let handler = match handlers.get(request_route.route.as_str()) {
         Some(h) => h.to_owned(),
         None => {
             println!("Request {req:#?}");
@@ -115,19 +145,19 @@ mod tests {
     #[test]
     fn test_get_route() {
         let request = "GET / HTTP/1.1";
-        let route = get_route(request);
-        assert_eq!(route, "/");
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/");
 
         let request = "GET /foo HTTP/1.1";
-        let route = get_route(request);
-        assert_eq!(route, "/foo");
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo");
 
         let request = "GET /foo/bar HTTP/1.1";
-        let route = get_route(request);
-        assert_eq!(route, "/foo/bar");
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo/bar");
 
         let request = "GET /foo/bar?baz=qux HTTP/1.1";
-        let route = get_route(request);
-        assert_eq!(route, "/foo/bar");
+        let parsed = get_route(request);
+        assert_eq!(parsed.route, "/foo/bar");
     }
 }
