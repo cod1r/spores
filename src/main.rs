@@ -28,11 +28,15 @@ type Handler = fn() -> String;
 ///
 /// ```
 /// let request = "GET /foo/bar?baz=qux HTTP/1.1";
-/// let route = get_route(request);
+/// let route = get_parsed_request(request);
 /// assert_eq!(route, "/foo/bar");
 /// ```
-fn get_route(request: &str) -> ParsedRequest {
-    let mut parts = request.split_whitespace();
+fn get_parsed_request(request: &Vec<String>) -> ParsedRequest {
+    let request_line = match request.first() {
+        Some(r) => r,
+        None => "",
+    };
+    let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap();
     let route = parts.next().unwrap();
     let version = parts.next().unwrap();
@@ -41,6 +45,22 @@ fn get_route(request: &str) -> ParsedRequest {
     let route = route_parts.next().unwrap();
 
     let query = route_parts.next().unwrap_or("");
+
+    let mut headers = HashMap::new();
+    for (index, header) in request.iter().enumerate() {
+        if index > 0 {
+            let mut split = header.split(':');
+            headers.insert(
+                split.next().unwrap().to_string(),
+                split.next().unwrap().to_string(),
+            );
+        }
+    }
+
+    let body = match request.last() {
+        Some(b) => b,
+        None => "",
+    };
 
     ParsedRequest {
         method: match method {
@@ -53,6 +73,8 @@ fn get_route(request: &str) -> ParsedRequest {
         route: route.to_string(),
         version: version.to_string(),
         query: query.to_string(),
+        headers,
+        body: body.to_string(),
     }
 }
 
@@ -71,6 +93,8 @@ struct ParsedRequest {
     route: String,
     version: String,
     query: String,
+    headers: HashMap<String, String>,
+    body: String,
 }
 
 /// Handles a connection, reading the request and writing the response.
@@ -82,20 +106,11 @@ fn handle_connection(mut stream: TcpStream) {
         .take_while(|line| !line.is_empty())
         .collect();
 
-    let mut status = "HTTP/1.1 200 OK \r\n";
-    let request_string = match req.first() {
-        Some(r) => r.to_string(),
-        None => {
-            println!("Request {req:#?}");
-            status = "HTTP/1.1 404 Not Found \r\n";
-            "/404".to_string()
-        }
-    };
-    let request_route = get_route(&request_string);
+    let request_route = get_parsed_request(&req);
 
     let mut handlers: HashMap<&str, Handler> = HashMap::new();
     handlers.insert("/", index);
-
+    let mut status = "GET / HTTP/1.1 \r\n";
     let handler = match handlers.get(request_route.route.as_str()) {
         Some(h) => h.to_owned(),
         None => {
@@ -107,8 +122,7 @@ fn handle_connection(mut stream: TcpStream) {
 
     println!("Request {req:#?}");
     let body = handler();
-    let size = format!("Content-Length: {}\r\n", body.len());
-    let response = format!("{status}{size}\r\n{body}");
+    let response = format!("{status}Content-Length: {}\r\n\r\n{body}", body.len());
     match stream.write_all(response.as_bytes()) {
         Ok(r) => r,
         Err(err) => {
@@ -143,21 +157,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_route() {
-        let request = "GET / HTTP/1.1";
-        let parsed = get_route(request);
+    fn test_get_parsed_request() {
+        let request = vec!["GET / HTTP/1.1".to_string()];
+        let parsed = get_parsed_request(&request);
         assert_eq!(parsed.route, "/");
 
-        let request = "GET /foo HTTP/1.1";
-        let parsed = get_route(request);
+        let request = vec!["GET /foo HTTP/1.1".to_string()];
+        let parsed = get_parsed_request(&request);
         assert_eq!(parsed.route, "/foo");
 
-        let request = "GET /foo/bar HTTP/1.1";
-        let parsed = get_route(request);
+        let request = vec!["GET /foo/bar HTTP/1.1".to_string()];
+        let parsed = get_parsed_request(&request);
         assert_eq!(parsed.route, "/foo/bar");
 
-        let request = "GET /foo/bar?baz=qux HTTP/1.1";
-        let parsed = get_route(request);
+        let request = vec!["GET /foo/bar?baz=qux HTTP/1.1".to_string()];
+        let parsed = get_parsed_request(&request);
         assert_eq!(parsed.route, "/foo/bar");
+
+        let request = vec![
+            "GET /foo/bar?baz=qux HTTP/1.1".to_string(),
+            "Host: localhost:7878".to_string(),
+        ];
+        let parsed = get_parsed_request(&request);
+        assert_eq!(parsed.headers.get("Host").unwrap(), " localhost:7878");
     }
 }
