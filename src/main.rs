@@ -117,27 +117,24 @@ struct ParsedRequest {
 /// Handles a connection, reading the request and writing the response.
 fn handle_connection(mut stream: TcpStream) {
     let mut reader = BufReader::new(&stream);
-    let mut contents: Vec<String> = reader
+    let mut req: Vec<String> = reader
         .by_ref()
         .lines()
         .map(|result| result.unwrap())
         .take_while(|line| !line.is_empty())
         .collect();
 
-    match contents[0].contains("POST") {
+    match req[0].contains("POST") {
         true => {
             println!("POST request");
             let mut contents_raw: Vec<u8> = vec![];
             reader.read_until(b'}', &mut contents_raw).unwrap();
-            contents.push(String::from_utf8(contents_raw).unwrap());
+            req.push(String::from_utf8(contents_raw).unwrap());
         }
         false => {
             println!("GET request");
         }
     };
-
-    // split by new line
-    let req: Vec<String> = contents;
 
     let request_route = get_parsed_request(&req);
 
